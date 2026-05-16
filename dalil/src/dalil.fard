@@ -1,0 +1,244 @@
+import("std/http") as http
+import("std/json") as json
+import("std/str") as str
+import("std/list") as list
+import("std/rec") as rec
+
+// Dalil -- دليل -- Guide, Proof, Evidence
+// The AI-native browser for the ANKA mesh.
+// Ten verbs. An AI that knows these can navigate the entire mesh.
+///
+// Dalil does not store state. Every call is a fresh traversal.
+// The mesh is the state. Dalil is the lens.
+
+fn get_node(address, path) {
+  let result = http.get(str.concat([address, path])) in
+  if result.status == 200 then
+    let body = json.decode(result.body) in
+    if body.ok then { ok: true, data: body }
+    else { ok: false, reason: rec.getOr(body, "reason", "unknown error") }
+  else
+    { ok: false, reason: str.concat(["http ", str.from(result.status)]) }
+}
+
+fn post_node(address, path, body) {
+  let result = http.post(str.concat([address, path]), json.encode(body)) in
+  if result.status == 200 then
+    let decoded = json.decode(result.body) in
+    if decoded.ok then { ok: true, data: decoded }
+    else { ok: false, reason: rec.getOr(decoded, "reason", "unknown error") }
+  else
+    { ok: false, reason: str.concat(["http ", str.from(result.status)]) }
+}
+
+// browse -- navigate to a node and see its claim spaces
+fn browse(node_address) {
+  let health = get_node(node_address, "/health") in
+  if !health.ok then { ok: false, reason: health.reason, node_address: node_address }
+  else
+    let sync = get_node(node_address, "/sync") in
+    let registry = get_node(node_address, "/registry") in
+    let peers = get_node(node_address, "/peers") in
+    {
+      ok: true,
+      node_address: node_address,
+      node_id: health.data.node_id,
+      claim_count: if sync.ok then sync.data.claim_count else 0,
+      witness_count: if sync.ok then sync.data.witness_count else 0,
+      peer_count: if peers.ok then list.len(peers.data.peers) else 0,
+      peers: if peers.ok then peers.data.peers else [],
+      claim_spaces: if registry.ok then registry.data.known_spaces else []
+    }
+}
+
+// explore -- browse a specific claim space on a node
+fn explore(node_address, claim_space) {
+  let known = get_node(node_address, "/known") in
+  if !known.ok then { ok: false, reason: known.reason }
+  else
+    let digests = known.data.known_digests in
+    let all_claims = list.fold(digests, [], fn(acc, digest) {
+      let result = get_node(node_address, str.concat(["/claim/", digest])) in
+      if !result.ok then acc
+      else if result.data.envelope.claim.claim_space != claim_space then acc
+      else list.append(acc, result.data.envelope)
+    }) in
+    let subjects = list.dedupe(list.map(all_claims, fn(env) { env.claim.subject })) in
+    let scored = list.map(all_claims, fn(env) {
+      let graph = get_node(node_address, str.concat(["/graph/claim/", env.digest_hex])) in
+      let score = if graph.ok then graph.data.witness_count else 0 in
+      { digest_hex: env.digest_hex, subject: env.claim.subject, object: env.claim.object, score: score, issuer: env.claim.issuer_node_id }
+    }) in
+    {
+      ok: true,
+      node_address: node_address,
+      claim_space: claim_space,
+      claim_count: list.len(all_claims),
+      subject_count: list.len(subjects),
+      subjects: subjects,
+      top_claims: scored
+    }
+}
+
+// read -- read a specific finding with full epistemic context
+fn read(node_address, claim_space, subject) {
+  let query = get_node(node_address, str.concat(["/query/", claim_space, "/", subject])) in
+  if !query.ok then { ok: false, reason: query.reason, claim_space: claim_space, subject: subject }
+  else
+    let winner_digest = query.data.single_winner.winner_digest_hex in
+    let graph = if winner_digest != null then
+      get_node(node_address, str.concat(["/graph/claim/", winner_digest]))
+    else { ok: false } in
+    let audit = if winner_digest != null then
+      get_node(node_address, str.concat(["/audit/trail/", winner_digest]))
+    else { ok: false } in
+    {
+      ok: true,
+      claim_space: claim_space,
+      subject: subject,
+      finding: query.data.single_winner.winner_value,
+      score: query.data.single_winner.winner_score,
+      cite_as: if winner_digest != null then str.concat(["anka:", winner_digest]) else null,
+      digest_hex: winner_digest,
+      witness_count: if graph.ok then graph.data.witness_count else 0,
+      witnesses: if graph.ok then graph.data.witnesses else [],
+      challenge_count: if graph.ok then graph.data.challenge_count else 0,
+      challenges: if graph.ok then graph.data.challenges else [],
+      reconstructable: if audit.ok then audit.data.history.reconstructable else false,
+      all_claims: rec.getOr(query.data, "all_claims", [])
+    }
+}
+
+// trail -- pull the full epistemic history of a claim
+fn trail(node_address, digest) {
+  let claim_result = get_node(node_address, str.concat(["/claim/", digest])) in
+  if !claim_result.ok then { ok: false, reason: claim_result.reason, digest_hex: digest }
+  else
+    let graph = get_node(node_address, str.concat(["/graph/claim/", digest])) in
+    let audit = get_node(node_address, str.concat(["/audit/trail/", digest])) in
+    let envelope = claim_result.data.envelope in
+    {
+      ok: true,
+      digest_hex: digest,
+      claim_space: envelope.claim.claim_space,
+      subject: envelope.claim.subject,
+      finding: envelope.claim.object,
+      issuer: envelope.claim.issuer_node_id,
+      published_at: envelope.claim.timestamp_unix_secs,
+      witnesses: if graph.ok then graph.data.witnesses else [],
+      witness_count: if graph.ok then graph.data.witness_count else 0,
+      challenges: if graph.ok then graph.data.challenges else [],
+      challenge_count: if graph.ok then graph.data.challenge_count else 0,
+      audit_events: if audit.ok then audit.data.history.trail else [],
+      reconstructable: if audit.ok then audit.data.history.reconstructable else false,
+      cite_as: str.concat(["anka:", digest])
+    }
+}
+
+// follow -- follow citation chain from a claim evidence_refs
+fn follow(node_address, digest) {
+  let claim_result = get_node(node_address, str.concat(["/claim/", digest])) in
+  if !claim_result.ok then { ok: false, reason: claim_result.reason }
+  else
+    let envelope = claim_result.data.envelope in
+    let evidence_refs = envelope.claim.evidence_refs in
+    let evidence_chain = list.map(evidence_refs, fn(ref) {
+      if str.starts_with(ref, "sha256:") then
+        let ref_trail = trail(node_address, ref) in
+        { ref: ref, kind: "anka_claim", resolved: ref_trail.ok, finding: if ref_trail.ok then ref_trail.finding else null }
+      else
+        { ref: ref, kind: "external", resolved: false, finding: null }
+    }) in
+    {
+      ok: true,
+      digest_hex: digest,
+      subject: envelope.claim.subject,
+      finding: envelope.claim.object,
+      evidence_count: list.len(evidence_refs),
+      evidence_chain: evidence_chain
+    }
+}
+
+// compose -- publish a new claim with evidence
+fn compose(node_address, claim_space, subject, finding, evidence_refs, timestamp_unix_secs) {
+  let body = {
+    claim_space: claim_space,
+    subject: subject,
+    predicate: "reported_finding",
+    object: finding,
+    evidence_refs: evidence_refs,
+    timestamp_unix_secs: timestamp_unix_secs
+  } in
+  let result = post_node(node_address, "/publish", body) in
+  if result.ok then
+    {
+      ok: true,
+      published: true,
+      digest_hex: result.data.digest_hex,
+      cite_as: str.concat(["anka:", result.data.digest_hex]),
+      claim_space: claim_space,
+      subject: subject,
+      finding: finding
+    }
+  else
+    { ok: false, reason: result.reason }
+}
+
+// subscribe -- declare interest in claim spaces
+fn subscribe(node_address, claim_spaces, subscriber_id) {
+  let result = post_node(node_address, "/subscribe", {
+    spaces: claim_spaces,
+    subscriber_id: subscriber_id
+  }) in
+  if result.ok then
+    {
+      ok: true,
+      subscribed: true,
+      node_address: node_address,
+      claim_spaces: claim_spaces,
+      subscriber_id: subscriber_id,
+      topics: list.map(claim_spaces, fn(cs) { str.concat(["anka.claim.", cs]) })
+    }
+  else
+    { ok: false, reason: result.reason }
+}
+
+// feed -- pull new claims from subscribed spaces since a timestamp
+fn feed(node_address, claim_spaces, since_timestamp) {
+  let known = get_node(node_address, "/known") in
+  if !known.ok then { ok: false, reason: known.reason }
+  else
+    let digests = known.data.known_digests in
+    let all_new = list.fold(digests, [], fn(acc, digest) {
+      let result = get_node(node_address, str.concat(["/claim/", digest])) in
+      if !result.ok then acc
+      else
+        let env = result.data.envelope in
+        let in_space = list.any(claim_spaces, fn(cs) { cs == env.claim.claim_space }) in
+        if !in_space then acc
+        else if env.claim.timestamp_unix_secs <= since_timestamp then acc
+        else
+          let graph = get_node(node_address, str.concat(["/graph/claim/", digest])) in
+          let score = if graph.ok then graph.data.witness_count else 0 in
+          list.append(acc, {
+            digest_hex: digest,
+            claim_space: env.claim.claim_space,
+            subject: env.claim.subject,
+            finding: env.claim.object,
+            score: score,
+            issuer: env.claim.issuer_node_id,
+            timestamp: env.claim.timestamp_unix_secs,
+            cite_as: str.concat(["anka:", digest])
+          })
+    }) in
+    {
+      ok: true,
+      node_address: node_address,
+      claim_spaces: claim_spaces,
+      since_timestamp: since_timestamp,
+      new_claim_count: list.len(all_new),
+      claims: all_new
+    }
+}
+
+export { browse, explore, read, trail, follow, compose, subscribe, feed }

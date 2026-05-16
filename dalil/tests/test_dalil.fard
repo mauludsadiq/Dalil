@@ -1,0 +1,95 @@
+import("../src/dalil") as dalil
+import("std/list") as list
+import("std/str") as str
+
+let NODE = "http://localhost:18080"
+
+test "browse returns node info" {
+  let result = dalil.browse(NODE) in
+  result.ok && result.node_id != null && result.claim_count >= 0
+}
+
+test "browse shows claim spaces" {
+  let result = dalil.browse(NODE) in
+  result.ok && list.len(result.claim_spaces) >= 0
+}
+
+test "browse returns peer count" {
+  let result = dalil.browse(NODE) in
+  result.ok && result.peer_count >= 0
+}
+
+test "compose publishes a claim" {
+  let result = dalil.compose(NODE, "research.result.claims", "dalil-test-001", "test finding", [], 1775710900) in
+  result.ok && result.published && str.starts_with(result.digest_hex, "sha256:")
+}
+
+test "compose returns cite_as with anka prefix" {
+  let result = dalil.compose(NODE, "research.result.claims", "dalil-cite-001", "finding", [], 1775710900) in
+  result.ok && str.starts_with(result.cite_as, "anka:sha256:")
+}
+
+test "read returns finding after compose" {
+  let _ = dalil.compose(NODE, "research.result.claims", "dalil-read-001", "3.2C per doubling", [], 1775710900) in
+  let result = dalil.read(NODE, "research.result.claims", "dalil-read-001") in
+  result.ok && result.finding == "3.2C per doubling"
+}
+
+test "read unknown subject returns null finding" {
+  let result = dalil.read(NODE, "research.result.claims", "nonexistent-xyz-abc") in
+  result.ok && result.finding == null
+}
+
+test "trail returns epistemic history" {
+  let pub = dalil.compose(NODE, "research.result.claims", "dalil-trail-001", "trail finding", [], 1775710900) in
+  let result = dalil.trail(NODE, pub.digest_hex) in
+  result.ok && result.digest_hex == pub.digest_hex && result.finding == "trail finding"
+}
+
+test "trail has cite_as" {
+  let pub = dalil.compose(NODE, "research.result.claims", "dalil-trail-cite-001", "finding", [], 1775710900) in
+  let result = dalil.trail(NODE, pub.digest_hex) in
+  result.ok && str.starts_with(result.cite_as, "anka:")
+}
+
+test "trail has issuer" {
+  let pub = dalil.compose(NODE, "research.result.claims", "dalil-trail-issuer-001", "finding", [], 1775710900) in
+  let result = dalil.trail(NODE, pub.digest_hex) in
+  result.ok && result.issuer != null
+}
+
+test "follow returns evidence chain" {
+  let pub = dalil.compose(NODE, "research.result.claims", "dalil-follow-001", "finding", [], 1775710900) in
+  let result = dalil.follow(NODE, pub.digest_hex) in
+  result.ok && result.digest_hex == pub.digest_hex && result.evidence_count == 0
+}
+
+test "follow resolves anka evidence refs" {
+  let p1 = dalil.compose(NODE, "research.result.claims", "dalil-ev-base", "base finding", [], 1775710900) in
+  let p2 = dalil.compose(NODE, "research.result.claims", "dalil-ev-derived", "derived finding", [p1.digest_hex], 1775710910) in
+  let result = dalil.follow(NODE, p2.digest_hex) in
+  result.ok && result.evidence_count == 1 && list.get(result.evidence_chain, 0).kind == "anka_claim"
+}
+
+test "explore returns claims in space" {
+  let _ = dalil.compose(NODE, "research.result.claims", "dalil-explore-001", "finding", [], 1775710900) in
+  let result = dalil.explore(NODE, "research.result.claims") in
+  result.ok && result.claim_count >= 1
+}
+
+test "subscribe returns topics" {
+  let result = dalil.subscribe(NODE, ["research.result.claims"], "test-subscriber") in
+  result.ok && list.len(result.topics) == 1 && list.get(result.topics, 0) == "anka.claim.research.result.claims"
+}
+
+test "feed returns new claims since timestamp" {
+  let _ = dalil.compose(NODE, "research.result.claims", "dalil-feed-001", "feed finding", [], 1775720000) in
+  let result = dalil.feed(NODE, ["research.result.claims"], 1775710000) in
+  result.ok && result.new_claim_count >= 1
+}
+
+test "feed claim has cite_as" {
+  let _ = dalil.compose(NODE, "research.result.claims", "dalil-feed-cite-001", "feed finding", [], 1775720000) in
+  let result = dalil.feed(NODE, ["research.result.claims"], 1775710000) in
+  result.ok && list.len(result.claims) >= 1 && str.starts_with(list.get(result.claims, 0).cite_as, "anka:")
+}
