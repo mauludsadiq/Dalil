@@ -1,0 +1,23 @@
+import("../src/dalil") as dalil
+import("std/str") as str
+import("std/list") as list
+
+test "dalil browse returns ok structure" {
+  let result = dalil.browse("http://localhost:18080") in
+  result.ok
+}
+
+test "dalil explore returns claim space data" {
+  let result = dalil.explore("http://localhost:18080", "research.result.claims") in
+  result.ok
+}
+
+test "dalil read returns finding" {
+  let result = dalil.read("http://localhost:18080", "research.result.claims", "nonexistent-subject") in
+  true
+}
+
+test "dalil follow_deep handles missing digest gracefully" {
+  let result = dalil.follow_deep("http://localhost:18080", "sha256:nonexistent", 2) in
+  result.ok
+}

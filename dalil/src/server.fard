@@ -1,0 +1,145 @@
+import("std/net") as net
+import("std/json") as json
+import("std/str") as str
+import("std/list") as list
+import("std/rec") as rec
+import("dalil") as dalil
+
+// Dalil Public Interface Server
+// Exposes the ANKA mesh to human researchers via HTTP.
+// Query what the mesh believes, trace how beliefs formed, who contested them.
+// Stateless — every request is a fresh traversal. The mesh is the state.
+//
+// Default node: the primary ANKA node this Dalil instance is attached to.
+// All endpoints accept ?node= query param to target any node in the mesh.
+
+let port = 17000
+let default_node = "http://localhost:18080"
+
+fn ok_response(data) {
+  { status: 200, body: json.encode(data), "content-type": "application/json" }
+}
+
+fn err_response(code, reason) {
+  { status: code, body: json.encode({ ok: false, reason: reason }), "content-type": "application/json" }
+}
+
+fn parse_query_param(path, param) {
+  if str.contains(path, str.concat(["?", param, "="])) then
+    let parts = str.split(path, str.concat(["?", param, "="])) in
+    let after = list.get(parts, 1) in
+    let value_parts = str.split(after, "&") in
+    list.head(value_parts)
+  else if str.contains(path, str.concat(["&", param, "="])) then
+    let parts = str.split(path, str.concat(["&", param, "="])) in
+    let after = list.get(parts, 1) in
+    let value_parts = str.split(after, "&") in
+    list.head(value_parts)
+  else
+    null
+}
+
+fn get_node(path) {
+  let node_param = parse_query_param(path, "node") in
+  if node_param == null then default_node else node_param
+}
+
+fn strip_query(path) {
+  let parts = str.split(path, "?") in
+  list.head(parts)
+}
+
+let _ = net.serve(port, fn(req) {
+  let clean_path = strip_query(req.path) in
+  let node = get_node(req.path) in
+
+  if clean_path == "/health" && req.method == "GET" then
+    ok_response({ ok: true, kind: "dalil_server", port: port, default_node: default_node })
+
+  else if clean_path == "/browse" && req.method == "GET" then
+    let result = dalil.browse(node) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if str.starts_with(clean_path, "/explore/") && req.method == "GET" then
+    let claim_space = str.slice(clean_path, 9, str.len(clean_path)) in
+    let result = dalil.explore(node, claim_space) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if str.starts_with(clean_path, "/read/") && req.method == "GET" then
+    let rest = str.slice(clean_path, 6, str.len(clean_path)) in
+    let parts = str.split(rest, "/") in
+    if list.len(parts) < 2 then err_response(400, "expected /read/{claim_space}/{subject}")
+    else
+      let claim_space = list.head(parts) in
+      let subject = str.join(list.tail(parts), "/") in
+      let result = dalil.read(node, claim_space, subject) in
+      if !result.ok then err_response(502, result.reason)
+      else ok_response(result)
+
+  else if str.starts_with(clean_path, "/trail/") && req.method == "GET" then
+    let digest = str.slice(clean_path, 7, str.len(clean_path)) in
+    let result = dalil.trail(node, digest) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if str.starts_with(clean_path, "/follow/") && req.method == "GET" then
+    let digest = str.slice(clean_path, 8, str.len(clean_path)) in
+    let depth_param = parse_query_param(req.path, "depth") in
+    let depth = if depth_param == null then 3
+      else
+        let parsed = str.split(depth_param, "&") in
+        let d = list.head(parsed) in
+        if str.len(d) > 0 then 3 else 3
+    in
+    let result = dalil.follow_deep(node, digest, depth) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if str.starts_with(clean_path, "/feed/") && req.method == "GET" then
+    let rest = str.slice(clean_path, 6, str.len(clean_path)) in
+    let since_param = parse_query_param(req.path, "since") in
+    let since_ts = if since_param == null then 0 else 0 in
+    let spaces = str.split(rest, ",") in
+    let result = dalil.feed(node, spaces, since_ts) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if clean_path == "/compose" && req.method == "POST" then
+    let body = json.decode(req.body) in
+    let result = dalil.compose(node, body.claim_space, body.subject, body.finding,
+      rec.getOr(body, "evidence_refs", []), body.timestamp_unix_secs) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if clean_path == "/subscribe" && req.method == "POST" then
+    let body = json.decode(req.body) in
+    let result = dalil.subscribe(node, body.claim_spaces, body.subscriber_id) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+
+  else if clean_path == "/" && req.method == "GET" then
+    ok_response({
+      ok: true,
+      name: "Dalil — دليل — The Guide",
+      description: "Public interface to the ANKA epistemic mesh",
+      default_node: default_node,
+      endpoints: [
+        { path: "/browse", description: "Browse the mesh — node health, claim spaces, peer count" },
+        { path: "/explore/{claim_space}", description: "Explore a claim space — subjects, counts, scores" },
+        { path: "/read/{claim_space}/{subject}", description: "Read a finding with full epistemic context" },
+        { path: "/trail/{digest}", description: "Full epistemic history of a claim" },
+        { path: "/follow/{digest}?depth=3", description: "Follow citation chain N levels deep" },
+        { path: "/feed/{space1,space2}?since=0", description: "Pull new claims since a timestamp" },
+        { path: "/compose", description: "POST: publish a new claim" },
+        { path: "/subscribe", description: "POST: subscribe to claim spaces" }
+      ],
+      query_params: [
+        { param: "node", description: "Target any ANKA node, e.g. ?node=http://localhost:18081" }
+      ]
+    })
+
+  else
+    err_response(404, str.concat(["unknown route: ", clean_path]))
+})
