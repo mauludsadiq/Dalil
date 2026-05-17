@@ -293,4 +293,80 @@ fn follow_deep(node_address, digest, max_depth) {
   }
 }
 
-export { browse, explore, read, trail, follow, follow_deep, compose, subscribe, feed }
+// memory -- unified civilizational memory query
+// Returns current belief, full history, lineage, and velocity for a subject.
+// This is the one-call answer to: "what does the mesh know about X?"
+fn memory(node_address, claim_space, subject) {
+  let current = read(node_address, claim_space, subject) in
+  let longitudinal = get_node(node_address, str.concat(["/longitudinal/", claim_space, "/", subject])) in
+  let known = get_node(node_address, "/known") in
+  let digests = if known.ok then known.data.known_digests else [] in
+  let subject_digests = list.filter(digests, fn(d) {
+    let claim_r = get_node(node_address, str.concat(["/claim/", d])) in
+    if !claim_r.ok then false
+    else claim_r.data.envelope.claim.claim_space == claim_space &&
+         claim_r.data.envelope.claim.subject == subject
+  }) in
+  let lineage_chains = list.map(subject_digests, fn(d) {
+    let r = get_node(node_address, str.concat(["/lineage/", d])) in
+    if r.ok then { digest: d, chain: r.data.chain, summary: r.data.summary }
+    else { digest: d, chain: [], summary: {} }
+  }) in
+  let complete_lineages = list.filter(lineage_chains, fn(l) {
+    rec.getOr(l.summary, "complete", false)
+  }) in
+  {
+    ok: true,
+    claim_space: claim_space,
+    subject: subject,
+    node_address: node_address,
+    current_belief: if current.ok then {
+      finding: current.finding,
+      score: current.score,
+      cite_as: current.cite_as,
+      witness_count: current.witness_count
+    } else { finding: null, score: 0, cite_as: null, witness_count: 0 },
+    history: if longitudinal.ok then longitudinal.data.analysis else null,
+    lineage_count: list.len(lineage_chains),
+    complete_lineage_count: list.len(complete_lineages),
+    claim_count: list.len(subject_digests)
+  }
+}
+
+// lineage_query -- resolve full upstream chain for a claim digest
+fn lineage_query(node_address, digest) {
+  let r = get_node(node_address, str.concat(["/lineage/", digest])) in
+  if !r.ok then { ok: false, reason: r.reason }
+  else { ok: true, digest: digest, chain: r.data.chain, summary: r.data.summary }
+}
+
+// model_memory -- full lineage report for a model
+fn model_memory(node_address, model_id) {
+  let r = get_node(node_address, str.concat(["/lineage/model/", model_id])) in
+  if !r.ok then { ok: false, reason: r.reason }
+  else { ok: true, report: r.data.report }
+}
+
+// remember -- everything the mesh knows about a subject since a timestamp
+fn remember(node_address, claim_space, subject, since_timestamp) {
+  let current = read(node_address, claim_space, subject) in
+  let feed_result = feed(node_address, [claim_space], since_timestamp) in
+  let subject_claims = if feed_result.ok then
+    list.filter(feed_result.claims, fn(c) { c.subject == subject })
+  else [] in
+  let longitudinal = get_node(node_address, str.concat(["/longitudinal/", claim_space, "/", subject])) in
+  {
+    ok: true,
+    claim_space: claim_space,
+    subject: subject,
+    since_timestamp: since_timestamp,
+    current_belief: if current.ok then current.finding else null,
+    current_score: if current.ok then current.score else 0,
+    new_claims_since: list.len(subject_claims),
+    claims: subject_claims,
+    velocity: if longitudinal.ok then longitudinal.data.analysis.velocity else null,
+    convergence: if longitudinal.ok then longitudinal.data.analysis.convergence else null
+  }
+}
+
+export { browse, explore, read, trail, follow, follow_deep, compose, subscribe, feed, memory, lineage_query, model_memory, remember }

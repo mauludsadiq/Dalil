@@ -119,6 +119,36 @@ let _ = net.serve(port, fn(req) {
     if !result.ok then err_response(502, result.reason)
     else ok_response(result)
 
+  else if str.starts_with(clean_path, "/memory/") && req.method == "GET" then
+    let rest = str.slice(clean_path, 8, str.len(clean_path)) in
+    let parts = str.split(rest, "/") in
+    if list.len(parts) < 2 then err_response(400, "expected /memory/{claim_space}/{subject}")
+    else
+      let claim_space = list.head(parts) in
+      let subject = str.join(list.tail(parts), "/") in
+      let result = dalil.memory(node, claim_space, subject) in
+      ok_response(result)
+  else if str.starts_with(clean_path, "/lineage/model/") && req.method == "GET" then
+    let model_id = str.slice(clean_path, 15, str.len(clean_path)) in
+    let result = dalil.model_memory(node, model_id) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+  else if str.starts_with(clean_path, "/lineage/") && req.method == "GET" then
+    let digest = str.slice(clean_path, 9, str.len(clean_path)) in
+    let result = dalil.lineage_query(node, digest) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response(result)
+  else if str.starts_with(clean_path, "/remember/") && req.method == "GET" then
+    let rest = str.slice(clean_path, 10, str.len(clean_path)) in
+    let parts = str.split(rest, "/") in
+    if list.len(parts) < 2 then err_response(400, "expected /remember/{claim_space}/{subject}")
+    else
+      let claim_space = list.head(parts) in
+      let subject = str.join(list.tail(parts), "/") in
+      let since_param = parse_query_param(req.path, "since") in
+      let since_ts = if since_param == null then 0 else 0 in
+      let result = dalil.remember(node, claim_space, subject, since_ts) in
+      ok_response(result)
   else if clean_path == "/" && req.method == "GET" then
     ok_response({
       ok: true,
