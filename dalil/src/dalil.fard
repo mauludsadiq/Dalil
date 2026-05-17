@@ -241,4 +241,56 @@ fn feed(node_address, claim_spaces, since_timestamp) {
     }
 }
 
-export { browse, explore, read, trail, follow, compose, subscribe, feed }
+// follow_deep -- follow citation chain N levels deep
+// Iterative traversal using a work queue — no recursion needed
+fn follow_deep(node_address, digest, max_depth) {
+  let initial = {
+    visited: {},
+    queue: [{ digest: digest, depth: 0 }],
+    chain: []
+  } in
+  let steps = list.range(0, max_depth * 10) in
+  let result = list.fold(steps, initial, fn(state, _) {
+    if list.len(state.queue) == 0 then state
+    else
+      let item = list.head(state.queue) in
+      let rest = list.tail(state.queue) in
+      if rec.has(state.visited, item.digest) then
+        { ...state, queue: rest }
+      else if item.depth >= max_depth then
+        { ...state, queue: rest }
+      else
+        let claim_result = get_node(node_address, str.concat(["/claim/", item.digest])) in
+        if !claim_result.ok then
+          { ...state, queue: rest }
+        else
+          let envelope = claim_result.data.envelope in
+          let refs = envelope.claim.evidence_refs in
+          let anka_refs = list.filter(refs, fn(r) { str.starts_with(r, "sha256:") }) in
+          let new_queue = list.map(anka_refs, fn(r) { { digest: r, depth: item.depth + 1 } }) in
+          let chain_entry = {
+            digest: item.digest,
+            depth: item.depth,
+            claim_space: envelope.claim.claim_space,
+            subject: envelope.claim.subject,
+            finding: envelope.claim.object,
+            issuer: envelope.claim.issuer_node_id,
+            evidence_refs: refs,
+            cite_as: str.concat(["anka:", item.digest])
+          } in
+          {
+            visited: rec.set(state.visited, item.digest, true),
+            queue: list.concat([rest, new_queue]),
+            chain: list.append(state.chain, chain_entry)
+          }
+  }) in
+  {
+    ok: true,
+    root_digest: digest,
+    depth_reached: list.len(result.chain),
+    max_depth: max_depth,
+    chain: result.chain
+  }
+}
+
+export { browse, explore, read, trail, follow, follow_deep, compose, subscribe, feed }
