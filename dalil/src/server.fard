@@ -149,6 +149,110 @@ let _ = net.serve(port, fn(req) {
       let since_ts = if since_param == null then 0 else 0 in
       let result = dalil.remember(node, claim_space, subject, since_ts) in
       ok_response(result)
+
+  else if clean_path == "/agents" && req.method == "GET" then
+    // List all agents registered in the mesh
+    let result = dalil.read(node, "agent.capabilities", "registry") in
+    let browse = dalil.browse(node) in
+    ok_response({
+      ok: true,
+      description: "Agents registered in the ANKA mesh",
+      agents: if result.ok then result else { agents: [] },
+      mesh: if browse.ok then browse else {}
+    })
+
+  else if str.starts_with(clean_path, "/discover/") && req.method == "GET" then
+    // Discover agents capable of handling a given capability
+    let capability = str.slice(clean_path, 10, str.len(clean_path)) in
+    let result = dalil.read(node, "agent.capabilities", capability) in
+    if !result.ok then
+      ok_response({
+        ok: false,
+        capability: capability,
+        agents: [],
+        reason: "no agents registered for this capability"
+      })
+    else
+      ok_response({
+        ok: true,
+        capability: capability,
+        agents: result,
+        description: str.concat(["Agents that can handle: ", capability])
+      })
+
+  else if clean_path == "/register" && req.method == "POST" then
+    // Agent registers its capabilities in the mesh
+    let body = json.decode(req.body) in
+    let agent_name = body.agent_name in
+    let capability = body.capability in
+    let address = body.address in
+    let region = rec.getOr(body, "region", "global") in
+    let ts = body.timestamp_unix_secs in
+    let result = dalil.compose(node, "agent.capabilities", capability,
+      str.concat([agent_name, "|", address, "|", region]),
+      [str.concat(["agent:", agent_name])], ts) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response({
+      ok: true,
+      agent_name: agent_name,
+      capability: capability,
+      region: region,
+      digest: result.digest_hex,
+      message: str.concat([agent_name, " registered for capability: ", capability])
+    })
+
+
+  else if clean_path == "/agents" && req.method == "GET" then
+    // List all agents registered in the mesh
+    let result = dalil.read(node, "agent.capabilities", "registry") in
+    let browse = dalil.browse(node) in
+    ok_response({
+      ok: true,
+      description: "Agents registered in the ANKA mesh",
+      agents: if result.ok then result else { agents: [] },
+      mesh: if browse.ok then browse else {}
+    })
+
+  else if str.starts_with(clean_path, "/discover/") && req.method == "GET" then
+    // Discover agents capable of handling a given capability
+    let capability = str.slice(clean_path, 10, str.len(clean_path)) in
+    let result = dalil.read(node, "agent.capabilities", capability) in
+    if !result.ok then
+      ok_response({
+        ok: false,
+        capability: capability,
+        agents: [],
+        reason: "no agents registered for this capability"
+      })
+    else
+      ok_response({
+        ok: true,
+        capability: capability,
+        agents: result,
+        description: str.concat(["Agents that can handle: ", capability])
+      })
+
+  else if clean_path == "/register" && req.method == "POST" then
+    // Agent registers its capabilities in the mesh
+    let body = json.decode(req.body) in
+    let agent_name = body.agent_name in
+    let capability = body.capability in
+    let address = body.address in
+    let region = rec.getOr(body, "region", "global") in
+    let ts = body.timestamp_unix_secs in
+    let result = dalil.compose(node, "agent.capabilities", capability,
+      str.concat([agent_name, "|", address, "|", region]),
+      [str.concat(["agent:", agent_name])], ts) in
+    if !result.ok then err_response(502, result.reason)
+    else ok_response({
+      ok: true,
+      agent_name: agent_name,
+      capability: capability,
+      region: region,
+      digest: result.digest_hex,
+      message: str.concat([agent_name, " registered for capability: ", capability])
+    })
+
   else if clean_path == "/" && req.method == "GET" then
     ok_response({
       ok: true,
@@ -163,7 +267,13 @@ let _ = net.serve(port, fn(req) {
         { path: "/follow/{digest}?depth=3", description: "Follow citation chain N levels deep" },
         { path: "/feed/{space1,space2}?since=0", description: "Pull new claims since a timestamp" },
         { path: "/compose", description: "POST: publish a new claim" },
-        { path: "/subscribe", description: "POST: subscribe to claim spaces" }
+        { path: "/subscribe", description: "POST: subscribe to claim spaces" },
+        { path: "/agents", description: "List all agents registered in the mesh" },
+        { path: "/discover/{capability}", description: "Find agents that can handle a capability" },
+        { path: "/register", description: "POST: register an agent capability in the mesh" },
+        { path: "/agents", description: "List all agents registered in the mesh" },
+        { path: "/discover/{capability}", description: "Find agents that can handle a capability" },
+        { path: "/register", description: "POST: register an agent capability in the mesh" }
       ],
       query_params: [
         { param: "node", description: "Target any ANKA node, e.g. ?node=http://localhost:18081" }
